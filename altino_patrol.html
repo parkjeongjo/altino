@@ -11,12 +11,17 @@
   button:disabled{opacity:.4}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;align-items:center}
   .row>button{flex:1}
-  #status{position:fixed;left:12px;right:12px;bottom:100px;padding:10px;border-radius:10px;background:#333;border:1px solid #888;white-space:pre-line}
+  #status{position:fixed;left:12px;right:12px;bottom:100px;padding:10px;border-radius:10px;background:#333;border:1px solid #888;white-space:pre-line;z-index:3}
   #diag{font-size:.8rem;color:#aaa;word-break:break-all}
   table{width:100%;text-align:center;border-collapse:collapse}
   td,th{border:1px solid #444;padding:6px 2px}
   input[type=number]{width:90px}
-  #stop{position:fixed;left:12px;right:12px;bottom:12px;height:80px;font-size:1.6rem;font-weight:700;background:#c62828;border:0}
+  #stop{position:fixed;left:12px;right:12px;bottom:12px;height:80px;font-size:1.6rem;font-weight:700;background:#c62828;border:0;z-index:3}
+  textarea{width:100%;box-sizing:border-box;font-size:1rem;padding:10px;border-radius:10px;border:1px solid #555;background:#222;color:#eee}
+  #sign{position:fixed;inset:0 0 170px 0;z-index:2;background:#ffe14d;color:#111;display:none;align-items:center;justify-content:center;text-align:center;overflow:hidden}
+  #signText{font-weight:900;line-height:1.3;white-space:pre-line;word-break:keep-all;padding:8px}
+  #signImg{width:100%;height:100%;object-fit:contain;background:#000;display:none}
+  #signClose{position:absolute;top:6px;right:6px;padding:8px 12px;opacity:.6}
 </style>
 </head>
 <body>
@@ -50,8 +55,20 @@
 <div class="row">직진 보정 <input type="number" id="trim" value="0" min="-30" max="30">
 유턴 횟수 <input type="number" id="turns" value="3" min="1" max="8"></div>
 
-<h2>5. 순회</h2>
+<h2>5. 안내판 (순회 중 화면에 표시)</h2>
+<textarea id="msg" rows="3">월요일부터
+여학생 교복 속에
+바지 허용</textarea>
+<div class="row">그림 사용(선택) <input type="file" id="img" accept="image/*"></div>
+<div class="row"><button id="preview">안내판 보기</button><button id="noImg">그림 지우기</button></div>
+
+<h2>6. 순회</h2>
 <div class="row"><button id="start">순회 시작 (3초 뒤 출발)</button></div>
+
+<div id="sign">
+  <div id="signText"></div><img id="signImg" alt="안내 그림">
+  <button id="signClose">닫기</button>
+</div>
 
 <button id="stop">■ 정지</button>
 
@@ -79,7 +96,7 @@ let runId = 0;            // 바뀌면 진행 중인 동작이 모두 멈춤
 let running = false;
 
 /* ───── 설정 저장 ───── */
-const FIELDS = ['sL', 'sC', 'sR', 'speed', 'angle', 'trim', 'turns'];
+const FIELDS = ['sL', 'sC', 'sR', 'speed', 'angle', 'trim', 'turns', 'msg'];
 ['sL', 'sC', 'sR'].forEach((id, i) => {
   for (let n = 0; n < 6; n++) $(id).add(new Option('ir' + (n + 1), n));
   $(id).value = i;
@@ -92,7 +109,7 @@ function save() {
 }
 try {
   const s = JSON.parse(localStorage.getItem('altinoPatrol'));
-  if (s) { FIELDS.forEach(k => $(k).value = s.v[k]); cal = s.cal; }
+  if (s) { FIELDS.forEach(k => { if (s.v[k] !== undefined) $(k).value = s.v[k]; }); cal = s.cal; }
 } catch (e) {}
 FIELDS.forEach(k => $(k).addEventListener('change', save));
 
@@ -217,10 +234,59 @@ function drive(speed, steer) { speedNow = speed; steerNow = steer; }
 
 function stopAll() {
   runId++; running = false; drive(0, 0);
-  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  keepAwake();
 }
 $('stop').onclick = () => { stopAll(); status('정지'); };
-document.addEventListener('visibilitychange', () => { if (document.hidden) stopAll(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAll(); else keepAwake(); });
+
+/* ───── 화면 켜짐 유지 ───── */
+const signOn = () => $('sign').style.display === 'flex';
+async function keepAwake() {
+  const need = running || signOn();
+  try {
+    if (need && (!wakeLock || wakeLock.released)) wakeLock = await navigator.wakeLock.request('screen');
+    else if (!need && wakeLock) { const w = wakeLock; wakeLock = null; await w.release(); }
+  } catch (e) {}
+}
+
+/* ───── 안내판 ───── */
+let picture = '';
+try { picture = localStorage.getItem('altinoPicture') || ''; } catch (e) {}
+
+function fitText() {
+  const box = $('sign'), t = $('signText');
+  let size = 160;
+  do { t.style.fontSize = size + 'px'; size -= 4; }
+  while (size > 16 && (t.scrollWidth > box.clientWidth || t.scrollHeight > box.clientHeight - 90));
+}
+function showSign() {
+  $('sign').style.display = 'flex';
+  $('signImg').style.display = picture ? 'block' : 'none';
+  $('signText').style.display = picture ? 'none' : 'block';
+  if (picture) $('signImg').src = picture;
+  else { $('signText').textContent = $('msg').value; fitText(); }
+  keepAwake();
+}
+window.addEventListener('resize', () => { if (signOn() && !picture) fitText(); });
+$('preview').onclick = showSign;
+$('signClose').onclick = () => { $('sign').style.display = 'none'; stopAll(); status('정지'); };
+$('img').onchange = () => {
+  const file = $('img').files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    picture = reader.result;
+    try { localStorage.setItem('altinoPicture', picture); }
+    catch (e) { status('그림이 커서 이번에만 사용합니다'); return; }
+    status('그림을 저장했습니다');
+  };
+  reader.readAsDataURL(file);
+};
+$('noImg').onclick = () => {
+  picture = ''; $('img').value = '';
+  try { localStorage.removeItem('altinoPicture'); } catch (e) {}
+  status('그림을 지웠습니다. 글자를 표시합니다');
+};
 
 document.querySelectorAll('[data-test]').forEach(btn => btn.onclick = async () => {
   if (!writeCh) return status('먼저 연결하세요');
@@ -296,7 +362,7 @@ $('start').onclick = async () => {
   stopAll();
   running = true;
   const my = runId;
-  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  showSign();
   for (let n = 3; n > 0 && my === runId; n--) { status(n + '초 뒤 출발'); await sleep(1000); }
   if (my === runId) patrol(my);
 };
